@@ -1,17 +1,19 @@
 ﻿using UnityEngine;
 
 /// <summary>
-/// 格子的视觉控制器 —— 挂在每个 Cube Prefab 上
+/// 格子视觉控制器 —— v2.0 升级版
 /// 
-/// ★ 核心修复：你原版的 SetPath() 没有调用 UpdateVisual()，
-///   导致路径颜色设了但状态没同步，旧路径清除时 isPath=false 
-///   却不会触发重绘 → 旧路径永远残留。
-///   
-/// Shader _State 值对照表:
-///   0 = Default(可行走)  1 = Hover  2 = Start/End标记
-///   3 = Path(最终路径)   4 = Exploring(开放列表-正在搜索)
-///   5 = Explored(关闭列表-已搜索)  6 = Wall(障碍物)
-///   7 = Player(玩家位置)
+/// 【v1.0 → v2.0 变化】
+///   + _TerrainColor — 地形基础颜色（Material 属性）
+///   + SetTerrain()  — 设置地形类型和颜色
+///   + portalID 颜色区分
+///   * Shader 新增 _TerrainColor 属性，State=0 时显示地形色而非固定灰色
+///
+/// Shader _State 值（交互状态，优先级从高到低）：
+///   7 = Player    6 = Wall(已废弃,改用 TerrainColor)
+///   5 = Explored  4 = Exploring
+///   3 = Path      2 = Start/End
+///   1 = Hover     0 = 显示 TerrainColor
 /// </summary>
 public class NodeView : MonoBehaviour {
     public int X { get; private set; }
@@ -21,39 +23,52 @@ public class NodeView : MonoBehaviour {
 
     private Material mat;
 
-    // ---- 状态标记 ----
-    private bool isWall;
+    // ---- 交互状态标记 ----
     private bool isHover;
     private bool isStart;
     private bool isEnd;
     private bool isPath;
-    private bool isExploring;  // A*搜索中-开放列表
-    private bool isExplored;   // A*搜索中-关闭列表
+    private bool isExploring;
+    private bool isExplored;
     private bool isPlayer;
 
     public void Init(int x, int y) {
         X = x;
         Y = y;
-        // 每个格子独立材质实例，不用 sharedMaterial
-        mat = meshRenderer.material;
+        mat = meshRenderer.material;  // 独立实例
         SetState(0);
     }
 
-    // ============================================================
-    //  统一的状态优先级判定（从高到低）
-    //  优先级: Player > Wall > Start/End > Path > Exploring > Explored > Hover > Default
-    // ============================================================
+    /// <summary>设置地形颜色（一次性，地形变化时调用）</summary>
+    public void SetTerrain(TerrainType type, int portalID = -1) {
+        if (mat == null) return;
+
+        Color c = (type == TerrainType.Portal && portalID >= 0)
+            ? TerrainData.GetPortalColor(portalID)
+            : TerrainData.GetColor(type);
+
+        mat.SetColor("_TerrainColor", c);
+
+        // Exit 地形额外设置发光
+        float glow = (type == TerrainType.Exit) ? 1f : 0f;
+        mat.SetFloat("_TerrainGlow", glow);
+
+        UpdateVisual();
+    }
+
+    // ═══════════════════════════════════════════
+    //  统一的状态优先级判定
+    // ═══════════════════════════════════════════
     private void UpdateVisual() {
         float state;
 
         if (isPlayer) state = 7;
-        else if (isWall) state = 6;
         else if (isStart || isEnd) state = 2;
         else if (isPath) state = 3;
         else if (isExploring) state = 4;
         else if (isExplored) state = 5;
         else if (isHover) state = 1;
-        else state = 0;
+        else state = 0; // 显示 _TerrainColor
 
         SetState(state);
     }
@@ -63,53 +78,18 @@ public class NodeView : MonoBehaviour {
             mat.SetFloat("_State", state);
     }
 
-    // ============================================================
-    //  公共接口 —— 每个都正确调用 UpdateVisual()
-    // ============================================================
+    // ═══════════════════════════════════════════
+    //  公共接口
+    // ═══════════════════════════════════════════
+    public void SetHover(bool on) { isHover = on; UpdateVisual(); }
+    public void SetStart(bool on) { isStart = on; UpdateVisual(); }
+    public void SetEnd(bool on) { isEnd = on; UpdateVisual(); }
+    public void SetPath(bool on) { isPath = on; UpdateVisual(); }
+    public void SetExploring(bool on) { isExploring = on; UpdateVisual(); }
+    public void SetExplored(bool on) { isExplored = on; UpdateVisual(); }
+    public void SetPlayer(bool on) { isPlayer = on; UpdateVisual(); }
 
-    public void SetHover(bool on) {
-        isHover = on;
-        UpdateVisual();
-    }
-
-    public void SetStart(bool on) {
-        isStart = on;
-        UpdateVisual();
-    }
-
-    public void SetEnd(bool on) {
-        isEnd = on;
-        UpdateVisual();
-    }
-
-    public void SetPath(bool on) {
-        isPath = on;
-        UpdateVisual();   // ★ 原版缺少这一行！
-    }
-
-    public void SetExploring(bool on) {
-        isExploring = on;
-        UpdateVisual();
-    }
-
-    public void SetExplored(bool on) {
-        isExplored = on;
-        UpdateVisual();
-    }
-
-    public void SetWall(bool on) {
-        isWall = on;
-        UpdateVisual();
-    }
-
-    public void SetPlayer(bool on) {
-        isPlayer = on;
-        UpdateVisual();
-    }
-
-    /// <summary>
-    /// 一次性清除所有"寻路可视化"状态（保留 wall、player）
-    /// </summary>
+    /// <summary>清除所有寻路可视化状态（保留地形颜色和玩家）</summary>
     public void ClearPathVisuals() {
         isPath = false;
         isExploring = false;
