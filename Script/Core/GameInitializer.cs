@@ -42,11 +42,10 @@ public class GameInitializer : MonoBehaviour {
 
         // ==================== 启动顺序 ====================
 
-        InputManager.Instance.Init();
-        // ⓪ 按键绑定管理器（在所有输入系统之前初始化）
-        //if (KeyBindManager.Instance != null)
-        //    KeyBindManager.Instance.Init();
-
+        // ⓪ 加载已保存的按键绑定（官方 Input System 持久化）
+        if (InputManager.Instance != null) {
+            InputManager.Instance.Init();
+        }
         // ① 生成网格
         NodeView[,] views = gridGenerator.Init();
 
@@ -74,6 +73,10 @@ public class GameInitializer : MonoBehaviour {
         EventBus.Subscribe<ExitReachedEvent>(_ =>
             GameStateManager.Instance.Win());
 
+        // 玩家死亡 → GameOver
+        EventBus.Subscribe<PlayerDeadEvent>(_ =>
+            GameStateManager.Instance.SetState(GameStateType.GameOver));
+
         // 暂停切换
         InputManager.Instance.OnTogglePause += () =>
             GameStateManager.Instance.TogglePause();
@@ -88,6 +91,6 @@ public class GameInitializer : MonoBehaviour {
         // ⑧ 开始游戏
         GameStateManager.Instance.StartGame();
 
-        Debug.Log($"[GameInitializer] v2.0 启动完成: {GridManager.Instance.width}x{GridManager.Instance.height}");
+        Debug.Log($"[GameInitializer] v2.1 启动完成: {GridManager.Instance.width}x{GridManager.Instance.height}");
     }
 }

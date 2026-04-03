@@ -3,20 +3,25 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// 纯逻辑玩家 —— v2.0 升级版
+/// 玩家 —— v2.1 策略+生存系统
 /// 
-/// 【v1.0 → v2.0 变化】
-///   + 事件驱动（订阅 InputManager 事件，不再自己检测 Input）
-///   + 传送门支持（走到 Portal 自动传送）
-///   + 出口检测（走到 Exit 触发 GameOver）
-///   + 算法切换（Q 键循环 A*/Dijkstra/Greedy）
-///   + 探索节点数统计
-///   + 响应 GameState（暂停时不处理输入）
+/// 【v2.0 → v2.1 变化】
+///   + 血量系统（HP, TakeDamage, 死亡事件）
+///   + 陷阱伤害（MoveToCell 时检测并扣血）
+///   + 策略切换（E 键循环 5 种 PathPolicy）
+///   + PathContext 构建（每次寻路时传入当前 HP 和策略）
+///   + 预测伤害（PathResult.predictedDamage 发布到事件）
+///   + Portal 传送视觉反馈
 /// </summary>
 public class Player : MonoSingleton<Player> {
     [Header("═══ 起始位置 ═══")]
     [SerializeField] public int gridX = 0;
     [SerializeField] public int gridY = 0;
+
+    [Header("═══ 血量 ═══")]
+    [Range(10, 500)]
+    [SerializeField] private int maxHP = 100;
+    [HideInInspector] public int currentHP;
 
     [Header("═══ 寻路可视化 ═══")]
     [Range(0.005f, 0.1f)]
@@ -27,6 +32,14 @@ public class Player : MonoSingleton<Player> {
     [Header("═══ 算法 ═══")]
     [SerializeField] private PathfindingAlgorithm currentAlgorithm = PathfindingAlgorithm.AStar;
 
+    [Header("═══ 策略 ═══")]
+    [SerializeField] private PathPolicy currentPolicy = PathPolicy.Fastest;
+
+    // ---- 公开属性 ----
+    public int MaxHP => maxHP;
+    public PathfindingAlgorithm CurrentAlgorithm => currentAlgorithm;
+    public PathPolicy CurrentPolicy => currentPolicy;
+
     // ---- 统计 ----
     [HideInInspector] public int totalSteps;
     [HideInInspector] public int pathfindCount;
@@ -34,42 +47,93 @@ public class Player : MonoSingleton<Player> {
     [HideInInspector] public float lastWalkTime;
     [HideInInspector] public int lastPathLength;
     [HideInInspector] public int lastExploredCount;
+    [HideInInspector] public int lastPredictedDamage;
+    [HideInInspector] public float lastTotalCost;
+    [HideInInspector] public bool lastUsedPortal;
 
-    public PathfindingAlgorithm CurrentAlgorithm => currentAlgorithm;
-
-    // ---- 内部状态 ----
+    // ---- 内部 ----
     private bool isBusy;
     private Coroutine currentRoutine;
     private List<Node> currentPath = new();
 
     // ═══════════════════════════════════════════
-    //  初始化 + 事件绑定
+    //  初始化
     // ═══════════════════════════════════════════
 
     public void Init() {
+        currentHP = maxHP;
         MarkPlayerCell(true);
+
+        EventBus.Publish(new HPChangedEvent { currentHP = currentHP, maxHP = maxHP });
 
         // 订阅输入事件
         var input = InputManager.Instance;
         input.OnMove += HandleMove;
         input.OnLeftClick += HandleClick;
         input.OnSwitchAlgorithm += CycleAlgorithm;
+        input.OnSwitchPolicy += CyclePolicy;
     }
 
     void OnDestroy() {
-        // 取消订阅（防止泄漏）
-        if (InputManager.Instance != null) {
-            InputManager.Instance.OnMove -= HandleMove;
-            InputManager.Instance.OnLeftClick -= HandleClick;
-            InputManager.Instance.OnSwitchAlgorithm -= CycleAlgorithm;
+        if (InputManager.Instance == null) return;
+        InputManager.Instance.OnMove -= HandleMove;
+        InputManager.Instance.OnLeftClick -= HandleClick;
+        InputManager.Instance.OnSwitchAlgorithm -= CycleAlgorithm;
+        InputManager.Instance.OnSwitchPolicy -= CyclePolicy;
+    }
+
+    // ═══════════════════════════════════════════
+    //  血量系统
+    // ═══════════════════════════════════════════
+
+    /// <summary>受到伤害</summary>
+    public void TakeDamage(int dmg, TerrainType source) {
+        if (dmg <= 0) return;
+
+        currentHP = Mathf.Max(0, currentHP - dmg);
+
+        EventBus.Publish(new PlayerDamagedEvent {
+            damage = dmg,
+            currentHP = currentHP,
+            maxHP = maxHP,
+            source = source
+        });
+
+        EventBus.Publish(new HPChangedEvent {
+            currentHP = currentHP,
+            maxHP = maxHP
+        });
+
+        if (currentHP <= 0) {
+            EventBus.Publish(new PlayerDeadEvent());
+            // GameInitializer 会订阅 PlayerDeadEvent → GameState.GameOver
         }
     }
 
     // ═══════════════════════════════════════════
-    //  WASD 逐格移动
+    //  构建寻路上下文
     // ═══════════════════════════════════════════
+
+    /// <summary>
+    /// 每次寻路时构建上下文
+    /// 把当前玩家状态（HP、策略偏好）传给 Pathfinder
+    /// </summary>
+    PathContext BuildContext() {
+        return new PathContext {
+            policy = currentPolicy,
+            allowDiagonal = true,
+            allowPortal = true,
+            currentHP = currentHP,
+            maxHP = maxHP
+        };
+    }
+
+    // ═══════════════════════════════════════════
+    //  WASD
+    // ═══════════════════════════════════════════
+
     void HandleMove(Vector2Int dir) {
-        if (isBusy) return;
+        if (isBusy || currentHP <= 0) return;
 
         int nx = gridX + dir.x;
         int ny = gridY + dir.y;
@@ -85,10 +149,11 @@ public class Player : MonoSingleton<Player> {
     }
 
     // ═══════════════════════════════════════════
-    //  左键点击寻路
+    //  左键寻路
     // ═══════════════════════════════════════════
+
     void HandleClick() {
-        if (isBusy) return;
+        if (isBusy || currentHP <= 0) return;
 
         if (!InputManager.Instance.GetMouseWorldPosition(out int tx, out int tz))
             return;
@@ -100,7 +165,6 @@ public class Player : MonoSingleton<Player> {
         if (targetNode == null || !targetNode.walkable) return;
         if (tx == gridX && tz == gridY) return;
 
-        // 停掉旧协程
         if (currentRoutine != null) {
             StopCoroutine(currentRoutine);
             isBusy = false;
@@ -108,7 +172,6 @@ public class Player : MonoSingleton<Player> {
 
         gm.ClearAllPathVisuals();
         currentPath.Clear();
-
         gm.GetView(gridX, gridY).SetStart(true);
         gm.GetView(tx, tz).SetEnd(true);
 
@@ -118,20 +181,23 @@ public class Player : MonoSingleton<Player> {
     }
 
     // ═══════════════════════════════════════════
-    //  协程：可视化搜索 → 路径高亮 → 逐格行走
+    //  寻路 + 行走协程
     // ═══════════════════════════════════════════
+
     IEnumerator FindAndWalk(Node start, Node target) {
         isBusy = true;
         var gm = GridManager.Instance;
         PathResult result = null;
 
+        // ★ 构建上下文（传入当前 HP 和策略）
+        PathContext ctx = BuildContext();
+
         // ---- 阶段1：可视化搜索 ----
         yield return StartCoroutine(Pathfinder.FindPathVisual(
-            start, target, gm.grid, currentAlgorithm,
+            start, target, gm.grid, currentAlgorithm, ctx,
             onVisit: (node, isOpen) => {
                 if (node.x == gridX && node.y == gridY) return;
                 if (node == target) return;
-
                 var view = gm.GetView(node.x, node.y);
                 if (isOpen) view.SetExploring(true);
                 else view.SetExplored(true);
@@ -143,32 +209,36 @@ public class Player : MonoSingleton<Player> {
         lastSearchTime = result.searchTime;
         lastExploredCount = result.exploredCount;
 
-        // ---- 寻路失败 ----
+        // ---- 失败 ----
         if (!result.success) {
             lastPathLength = 0;
             gm.ClearAllPathVisuals();
-
             EventBus.Publish(new PathFailedEvent());
-
             isBusy = false;
             yield break;
         }
 
         currentPath = result.path;
         lastPathLength = currentPath.Count;
+        lastTotalCost = result.totalCost;
+        lastPredictedDamage = result.predictedDamage;
+        lastUsedPortal = result.usedPortal;
 
         // 发布成功事件
         EventBus.Publish(new PathFoundEvent {
             pathLength = lastPathLength,
             exploredCount = lastExploredCount,
-            searchTime = lastSearchTime
+            searchTime = lastSearchTime,
+            totalCost = lastTotalCost,
+            predictedDamage = lastPredictedDamage,
+            usedPortal = lastUsedPortal,
+            policyName = currentPolicy.ToString()
         });
 
         // ---- 阶段2：高亮路径 ----
         foreach (var node in currentPath) {
-            var v = gm.GetView(node.x, node.y);
-            v.ClearPathVisuals();
-            v.SetPath(true);
+            gm.GetView(node.x, node.y).ClearPathVisuals();
+            gm.GetView(node.x, node.y).SetPath(true);
         }
         MarkPlayerCell(true);
 
@@ -178,6 +248,9 @@ public class Player : MonoSingleton<Player> {
         float walkStart = Time.realtimeSinceStartup;
 
         for (int i = 1; i < currentPath.Count; i++) {
+            // 死了就停
+            if (currentHP <= 0) break;
+
             Node next = currentPath[i];
 
             var prevView = gm.GetView(currentPath[i - 1].x, currentPath[i - 1].y);
@@ -185,7 +258,6 @@ public class Player : MonoSingleton<Player> {
             prevView.SetPlayer(false);
 
             MoveToCell(next.x, next.y);
-
             yield return new WaitForSeconds(pathWalkDelay);
         }
 
@@ -194,13 +266,13 @@ public class Player : MonoSingleton<Player> {
         gm.ClearAllPathVisuals();
         currentPath.Clear();
         MarkPlayerCell(true);
-
         isBusy = false;
     }
 
     // ═══════════════════════════════════════════
-    //  移动 + 特殊地形处理
+    //  移动 + 地形效果
     // ═══════════════════════════════════════════
+
     void MoveToCell(int x, int y) {
         MarkPlayerCell(false);
         gridX = x;
@@ -210,21 +282,25 @@ public class Player : MonoSingleton<Player> {
 
         var node = GridManager.Instance.GetNode(x, y);
 
-        // 发布移动事件
         EventBus.Publish(new PlayerMovedEvent {
             x = x, y = y,
             terrain = node.terrainType
         });
 
-        // ---- 传送门 ----
-        if (node.terrainType == TerrainType.Portal && node.portalTarget != null) {
+        // ★ 陷阱伤害
+        if (node.isTrap && node.damage > 0) {
+            TakeDamage(node.damage, node.terrainType);
+        }
+
+        // ★ 传送门跳跃
+        if (node.isPortal) {
             MarkPlayerCell(false);
             gridX = node.portalTarget.x;
             gridY = node.portalTarget.y;
             MarkPlayerCell(true);
         }
 
-        // ---- 出口 ----
+        // ★ 出口
         if (node.terrainType == TerrainType.Exit) {
             EventBus.Publish(new ExitReachedEvent());
         }
@@ -236,8 +312,9 @@ public class Player : MonoSingleton<Player> {
     }
 
     // ═══════════════════════════════════════════
-    //  算法切换
+    //  算法 / 策略切换
     // ═══════════════════════════════════════════
+
     void CycleAlgorithm() {
         currentAlgorithm = currentAlgorithm switch {
             PathfindingAlgorithm.AStar => PathfindingAlgorithm.Dijkstra,
@@ -245,7 +322,18 @@ public class Player : MonoSingleton<Player> {
             PathfindingAlgorithm.GreedyBestFirst => PathfindingAlgorithm.AStar,
             _ => PathfindingAlgorithm.AStar
         };
-
         EventBus.Publish(new AlgorithmChangedEvent { algorithmName = currentAlgorithm.ToString() });
+    }
+
+    void CyclePolicy() {
+        currentPolicy = currentPolicy switch {
+            PathPolicy.Fastest => PathPolicy.Shortest,
+            PathPolicy.Shortest => PathPolicy.AvoidMud,
+            PathPolicy.AvoidMud => PathPolicy.PreferPortal,
+            PathPolicy.PreferPortal => PathPolicy.Cautious,
+            PathPolicy.Cautious => PathPolicy.Fastest,
+            _ => PathPolicy.Fastest
+        };
+        EventBus.Publish(new PolicyChangedEvent { policyName = currentPolicy.ToString() });
     }
 }

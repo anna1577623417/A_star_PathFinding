@@ -62,10 +62,36 @@ public struct PathFoundEvent {
     public int pathLength;
     public int exploredCount;
     public float searchTime;
+    public float totalCost;
+    public int predictedDamage;
+    public bool usedPortal;
+    public string policyName;
 }
 
 /// <summary>寻路失败</summary>
 public struct PathFailedEvent { }
+
+/// <summary>玩家受到伤害（陷阱/地形）</summary>
+public struct PlayerDamagedEvent {
+    public int damage;
+    public int currentHP;
+    public int maxHP;
+    public TerrainType source;
+}
+
+/// <summary>玩家死亡</summary>
+public struct PlayerDeadEvent { }
+
+/// <summary>玩家血量变化（含回复）</summary>
+public struct HPChangedEvent {
+    public int currentHP;
+    public int maxHP;
+}
+
+/// <summary>寻路策略切换</summary>
+public struct PolicyChangedEvent {
+    public string policyName;
+}
 
 /// <summary>游戏状态变更</summary>
 public struct GameStateChangedEvent {
