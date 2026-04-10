@@ -65,7 +65,7 @@ public class GameHUD : MonoBehaviour {
         // ÓÎÏ·×´Ì¬¸²¸Ç²ã
         var gs = GameStateManager.Instance;
         if (gs != null && gs.CurrentState == GameStateType.Paused)
-            DrawCentered("ÒÑÔÝÍ£ ¡ª Esc »Ö¸´", _title);
+           // DrawCentered("ÒÑÔÝÍ£ ¡ª Esc »Ö¸´", _title);
         if (gs != null && gs.CurrentState == GameStateType.GameOver)
             DrawCentered("Í¨¹Ø£¡ ¡ª R ÖØÍæ", _title);
 
