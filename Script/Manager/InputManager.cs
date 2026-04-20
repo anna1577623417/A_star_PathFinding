@@ -18,7 +18,7 @@ using UnityEngine.InputSystem;
 ///       加新 Action = 只在 .inputactions 和 SO 各加一条 = 改 0 处代码
 ///
 /// 【保留的专用事件（签名不同于 string）】
-///   OnMove(Vector2Int)   — Move 是 Vector2 值，不是 Button
+///   OnMove(Vector2Int)   — Move：2DVector 上离散化（WA/WD/SA/SD 斜向；对向两键与 3+ 键不移动）
 ///   OnMouseDelta(Vector2) — Pan 是连续值
 ///   OnScroll(float)      — Zoom 是 Axis
 ///   OnMiddleMouse(bool)  — 需要 started/canceled 状态
@@ -65,7 +65,8 @@ public class InputManager : MonoSingleton<InputManager> {
     public GameInputActions InputActions => input;
     public KeyBindDatabase Database => keyBindDatabase;
 
-    private const string REBIND_SAVE_KEY = "InputRebinds";
+    /// <summary>与 .inputactions 结构强相关；Move 改为 2DVector 后需换新 key，避免旧 JSON 覆盖新默认绑定。</summary>
+    private const string REBIND_SAVE_KEY = "InputRebinds_v2_WASDComposite";
 
     // ✅ 新增：初始化保护
     private bool initialized = false;
@@ -147,9 +148,10 @@ public class InputManager : MonoSingleton<InputManager> {
     }
 
     IEnumerator MoveRepeatLoop() {
+        var move = input.Gameplay.Move;
         while (true) {
-            Vector2 raw = input.Gameplay.Move.ReadValue<Vector2>();
-            if (raw.sqrMagnitude > 0.1f)
+            Vector2 raw = DiscreteGridMoveFrom2DVector.ResolveMoveVector(move);
+            if (raw.sqrMagnitude > 0.01f)
                 OnMove?.Invoke(new Vector2Int(Mathf.RoundToInt(raw.x), Mathf.RoundToInt(raw.y)));
             yield return new WaitForSeconds(moveInterval);
         }
@@ -171,10 +173,7 @@ public class InputManager : MonoSingleton<InputManager> {
             return;
         }
 
-        int bindingIndex = -1;
-        for (int i = 0; i < action.bindings.Count; i++) {
-            if (!action.bindings[i].isComposite) { bindingIndex = i; break; }
-        }
+        int bindingIndex = InputActionRebindHelper.GetRebindRootBindingIndex(action);
         if (bindingIndex < 0) return;
 
         EventBus.Publish(new RebindStartEvent { actionName = e.actionName });
@@ -239,7 +238,7 @@ public class InputManager : MonoSingleton<InputManager> {
         }
 
         foreach (var kv in pathMap) {
-            if (kv.Value.Count > 2) {
+            if (kv.Value.Count > 1) {
                 Toast.Show($"按键冲突: {string.Join(", ", kv.Value)}", Toast.Level.Warning, 3f);
                 break;
             }
@@ -265,14 +264,7 @@ public class InputManager : MonoSingleton<InputManager> {
     public string GetBindingDisplay(string mapName, string actionName) {
         var action = input.asset.FindAction($"{mapName}/{actionName}");
         if (action == null) return "???";
-
-        for (int i = 0; i < action.bindings.Count; i++) {
-            if (action.bindings[i].isComposite)
-                return action.GetBindingDisplayString(i,
-                    InputBinding.DisplayStringOptions.DontIncludeInteractions);
-        }
-        return action.GetBindingDisplayString(0,
-            InputBinding.DisplayStringOptions.DontIncludeInteractions);
+        return InputActionRebindHelper.GetPrimaryBindingDisplayString(action);
     }
 
     public bool GetMouseWorldPosition(out int gridX, out int gridZ) {

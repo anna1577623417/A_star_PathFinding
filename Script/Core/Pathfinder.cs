@@ -7,7 +7,8 @@ using UnityEngine;
 public enum PathfindingAlgorithm {
     AStar,
     Dijkstra,
-    GreedyBestFirst
+    GreedyBestFirst,
+    JumpPointSearch
 }
 
 /// <summary>
@@ -61,7 +62,7 @@ public static class Pathfinder {
 
     private const float STRAIGHT = 1f;
     private const float DIAGONAL = 1.414f;
-    private const float PORTAL_JUMP_COST = 0.01f; // 传送跳跃几乎免费
+    private const float PORTAL_JUMP_DISTANCE = 1f; // A1 -> A2 视作 1 步距离
 
     // ═══════════════════════════════════════════
     //  同步版
@@ -70,6 +71,10 @@ public static class Pathfinder {
         Node start, Node target, Node[,] grid,
         PathfindingAlgorithm algorithm,
         PathContext ctx) {
+        if (algorithm == PathfindingAlgorithm.JumpPointSearch) {
+            return FindPathJPS(start, target, grid, ctx);
+        }
+
         float startTime = Time.realtimeSinceStartup;
         ResetGrid(grid);
 
@@ -77,10 +82,10 @@ public static class Pathfinder {
         var closedSet = new HashSet<Node>();
 
         start.gCost = 0;
-        start.hCost = Heuristic(start, target);
+        start.hCost = Heuristic(start, target, ctx);
 
         while (openSet.Count > 0) {
-            Node current = GetBestNode(openSet, algorithm);
+            Node current = GetBestNode(openSet, algorithm, ctx);
             openSet.Remove(current);
             closedSet.Add(current);
 
@@ -101,7 +106,7 @@ public static class Pathfinder {
                 if (newGCost < neighbor.gCost) {
                     neighbor.gCost = newGCost;
                     neighbor.hCost = (algorithm == PathfindingAlgorithm.Dijkstra)
-                        ? 0 : Heuristic(neighbor, target);
+                        ? 0 : Heuristic(neighbor, target, ctx);
                     neighbor.parent = current;
 
                     if (!openSet.Contains(neighbor))
@@ -123,6 +128,11 @@ public static class Pathfinder {
         Action<Node, bool> onVisit,
         Action<PathResult> onComplete,
         float stepDelay = 0.02f) {
+        if (algorithm == PathfindingAlgorithm.JumpPointSearch) {
+            yield return FindPathVisualJPS(start, target, grid, ctx, onVisit, onComplete, stepDelay);
+            yield break;
+        }
+
         float startTime = Time.realtimeSinceStartup;
         ResetGrid(grid);
 
@@ -130,10 +140,10 @@ public static class Pathfinder {
         var closedSet = new HashSet<Node>();
 
         start.gCost = 0;
-        start.hCost = Heuristic(start, target);
+        start.hCost = Heuristic(start, target, ctx);
 
         while (openSet.Count > 0) {
-            Node current = GetBestNode(openSet, algorithm);
+            Node current = GetBestNode(openSet, algorithm, ctx);
             openSet.Remove(current);
             closedSet.Add(current);
 
@@ -156,7 +166,7 @@ public static class Pathfinder {
                 if (newGCost < neighbor.gCost) {
                     neighbor.gCost = newGCost;
                     neighbor.hCost = (algorithm == PathfindingAlgorithm.Dijkstra)
-                        ? 0 : Heuristic(neighbor, target);
+                        ? 0 : Heuristic(neighbor, target, ctx);
                     neighbor.parent = current;
 
                     if (!openSet.Contains(neighbor)) {
@@ -193,7 +203,7 @@ public static class Pathfinder {
         // ---- 传送门跳跃：几乎免费 ----
         // 判断：from 是 Portal 且 to 是它的 portalTarget
         if (from.isPortal && from.portalTarget == to)
-            return PORTAL_JUMP_COST;
+            return GetPortalJumpCost(ctx);
 
         // ---- ① 基础代价 ----
         float baseCost = to.moveCost;
@@ -219,9 +229,13 @@ public static class Pathfinder {
             case PathPolicy.PreferPortal:
                 // 走到传送门格子本身也有奖励（引导路径向传送门靠拢）
                 if (to.terrainType == TerrainType.Portal)
-                    totalCost *= 0.1f;
+                    totalCost *= 0.25f;
                 break;
         }
+
+        // 全局轻微偏好 Portal（不只 PreferPortal 生效）
+        if (to.terrainType == TerrainType.Portal && ctx.policy != PathPolicy.PreferPortal)
+            totalCost *= 0.8f;
 
         // ---- ③ 陷阱惩罚（所有策略都生效）----
         if (to.isTrap && to.damage > 0) {
@@ -292,18 +306,42 @@ public static class Pathfinder {
     /// Octile distance（8方向最优启发）
     /// 比欧几里得更准确，比曼哈顿不会高估
     /// </summary>
-    static float Heuristic(Node a, Node b) {
+    static float Heuristic(Node a, Node b, PathContext ctx) {
         int dx = Mathf.Abs(a.x - b.x);
         int dy = Mathf.Abs(a.y - b.y);
-        return STRAIGHT * (dx + dy) + (DIAGONAL - 2 * STRAIGHT) * Mathf.Min(dx, dy);
+        float direct = STRAIGHT * (dx + dy) + (DIAGONAL - 2 * STRAIGHT) * Mathf.Min(dx, dy);
+
+        if (!ctx.allowPortal)
+            return direct;
+
+        // Portal 感知启发：起点到传送门入口 + 1 步跳跃 + 出口到目标
+        // 避免 A* 因 h 不知道“可跳跃”而迟迟不走 Portal。
+        float viaPortal = float.MaxValue;
+        var gm = GridManager.Instance;
+        if (gm != null && gm.portalNodes != null) {
+            foreach (var portal in gm.portalNodes) {
+                if (portal == null || portal.portalTarget == null) continue;
+                viaPortal = Mathf.Min(viaPortal,
+                    OctileDistance(a, portal) + PORTAL_JUMP_DISTANCE + OctileDistance(portal.portalTarget, b));
+            }
+        }
+
+        float h = Mathf.Min(direct, viaPortal);
+        if (ctx.policy == PathPolicy.PreferPortal && viaPortal < float.MaxValue)
+            h = Mathf.Min(h, viaPortal * 0.9f);
+
+        return h;
     }
 
-    static Node GetBestNode(List<Node> openSet, PathfindingAlgorithm algo) {
+    static Node GetBestNode(List<Node> openSet, PathfindingAlgorithm algo, PathContext ctx) {
         Node best = openSet[0];
         for (int i = 1; i < openSet.Count; i++) {
             float bestF = GetF(best, algo);
             float curF = GetF(openSet[i], algo);
-            if (curF < bestF || (Mathf.Approximately(curF, bestF) && openSet[i].hCost < best.hCost))
+            if (curF < bestF ||
+                (Mathf.Approximately(curF, bestF) && openSet[i].hCost < best.hCost) ||
+                (ctx.policy == PathPolicy.PreferPortal && Mathf.Approximately(curF, bestF) &&
+                 openSet[i].isPortal && !best.isPortal))
                 best = openSet[i];
         }
         return best;
@@ -315,6 +353,283 @@ public static class Pathfinder {
             PathfindingAlgorithm.GreedyBestFirst => n.hCost,
             _ => n.fCost
         };
+    }
+
+    static float GetPortalJumpCost(PathContext ctx) {
+        return ctx.policy switch {
+            PathPolicy.PreferPortal => 0.35f,
+            PathPolicy.Shortest => PORTAL_JUMP_DISTANCE,
+            _ => 0.6f
+        };
+    }
+
+    static float OctileDistance(Node a, Node b) {
+        int dx = Mathf.Abs(a.x - b.x);
+        int dy = Mathf.Abs(a.y - b.y);
+        return STRAIGHT * (dx + dy) + (DIAGONAL - 2 * STRAIGHT) * Mathf.Min(dx, dy);
+    }
+
+    // ═══════════════════════════════════════════
+    //  Jump Point Search
+    // ═══════════════════════════════════════════
+    static PathResult FindPathJPS(Node start, Node target, Node[,] grid, PathContext ctx) {
+        float startTime = Time.realtimeSinceStartup;
+        ResetGrid(grid);
+
+        var openSet = new List<Node> { start };
+        var closedSet = new HashSet<Node>();
+
+        start.gCost = 0f;
+        start.hCost = Heuristic(start, target, ctx);
+
+        while (openSet.Count > 0) {
+            Node current = GetBestNode(openSet, PathfindingAlgorithm.JumpPointSearch, ctx);
+            openSet.Remove(current);
+            closedSet.Add(current);
+
+            if (current == target) {
+                var compactPath = Retrace(start, target);
+                var expandedPath = ExpandJpsPath(compactPath, grid);
+                return BuildResult(expandedPath, closedSet.Count, Time.realtimeSinceStartup - startTime);
+            }
+
+            var successors = IdentifySuccessors(current, target, grid, ctx);
+            foreach (var succ in successors) {
+                if (!succ.node.walkable || closedSet.Contains(succ.node))
+                    continue;
+
+                float newG = current.gCost + succ.travelCost;
+                if (newG < succ.node.gCost) {
+                    succ.node.gCost = newG;
+                    succ.node.hCost = Heuristic(succ.node, target, ctx);
+                    succ.node.parent = current;
+                    if (!openSet.Contains(succ.node))
+                        openSet.Add(succ.node);
+                }
+            }
+        }
+
+        return PathResult.Fail(closedSet.Count, Time.realtimeSinceStartup - startTime);
+    }
+
+    static IEnumerator FindPathVisualJPS(
+        Node start, Node target, Node[,] grid, PathContext ctx,
+        Action<Node, bool> onVisit, Action<PathResult> onComplete, float stepDelay) {
+        float startTime = Time.realtimeSinceStartup;
+        ResetGrid(grid);
+
+        var openSet = new List<Node> { start };
+        var closedSet = new HashSet<Node>();
+
+        start.gCost = 0f;
+        start.hCost = Heuristic(start, target, ctx);
+
+        while (openSet.Count > 0) {
+            Node current = GetBestNode(openSet, PathfindingAlgorithm.JumpPointSearch, ctx);
+            openSet.Remove(current);
+            closedSet.Add(current);
+            onVisit?.Invoke(current, false);
+
+            if (current == target) {
+                var compactPath = Retrace(start, target);
+                var expandedPath = ExpandJpsPath(compactPath, grid);
+                onComplete?.Invoke(BuildResult(expandedPath, closedSet.Count, Time.realtimeSinceStartup - startTime));
+                yield break;
+            }
+
+            var successors = IdentifySuccessors(current, target, grid, ctx);
+            foreach (var succ in successors) {
+                if (!succ.node.walkable || closedSet.Contains(succ.node))
+                    continue;
+
+                float newG = current.gCost + succ.travelCost;
+                if (newG < succ.node.gCost) {
+                    succ.node.gCost = newG;
+                    succ.node.hCost = Heuristic(succ.node, target, ctx);
+                    succ.node.parent = current;
+
+                    if (!openSet.Contains(succ.node)) {
+                        openSet.Add(succ.node);
+                        onVisit?.Invoke(succ.node, true);
+                    }
+                }
+            }
+
+            if (stepDelay > 0) yield return new WaitForSeconds(stepDelay);
+            else yield return null;
+        }
+
+        onComplete?.Invoke(PathResult.Fail(closedSet.Count, Time.realtimeSinceStartup - startTime));
+    }
+
+    struct JumpSuccessor {
+        public Node node;
+        public float travelCost;
+        public JumpSuccessor(Node node, float travelCost) {
+            this.node = node;
+            this.travelCost = travelCost;
+        }
+    }
+
+    static List<JumpSuccessor> IdentifySuccessors(Node node, Node target, Node[,] grid, PathContext ctx) {
+        var result = new List<JumpSuccessor>(8);
+        var dirs = PrunedDirections(node, grid, ctx.allowDiagonal);
+
+        for (int i = 0; i < dirs.Count; i++) {
+            var dir = dirs[i];
+            if (Jump(node, dir, target, grid, ctx, out Node jumpPoint, out float cost))
+                result.Add(new JumpSuccessor(jumpPoint, cost));
+        }
+
+        if (ctx.allowPortal && node.isPortal && node.portalTarget != null) {
+            result.Add(new JumpSuccessor(node.portalTarget, GetMoveCost(node, node.portalTarget, ctx)));
+        }
+        return result;
+    }
+
+    static bool Jump(Node from, Vector2Int dir, Node target, Node[,] grid, PathContext ctx, out Node jumpPoint, out float travelCost) {
+        jumpPoint = null;
+        travelCost = 0f;
+
+        int nx = from.x + dir.x;
+        int ny = from.y + dir.y;
+        int w = grid.GetLength(0);
+        int h = grid.GetLength(1);
+
+        if (!InBounds(nx, ny, w, h)) return false;
+        Node next = grid[nx, ny];
+        if (!next.walkable) return false;
+
+        travelCost = GetMoveCost(from, next, ctx);
+
+        if (next == target) {
+            jumpPoint = next;
+            return true;
+        }
+
+        if (HasForcedNeighbor(next, dir, grid, ctx.allowDiagonal)) {
+            jumpPoint = next;
+            return true;
+        }
+
+        if (ctx.allowDiagonal && dir.x != 0 && dir.y != 0) {
+            if (Jump(next, new Vector2Int(dir.x, 0), target, grid, ctx, out _, out _) ||
+                Jump(next, new Vector2Int(0, dir.y), target, grid, ctx, out _, out _)) {
+                jumpPoint = next;
+                return true;
+            }
+        }
+
+        if (Jump(next, dir, target, grid, ctx, out Node jp, out float extraCost)) {
+            jumpPoint = jp;
+            travelCost += extraCost;
+            return true;
+        }
+
+        return false;
+    }
+
+    static List<Vector2Int> PrunedDirections(Node node, Node[,] grid, bool allowDiagonal) {
+        var dirs = new List<Vector2Int>(8);
+        if (node.parent == null) {
+            dirs.Add(new Vector2Int(1, 0));
+            dirs.Add(new Vector2Int(-1, 0));
+            dirs.Add(new Vector2Int(0, 1));
+            dirs.Add(new Vector2Int(0, -1));
+            if (allowDiagonal) {
+                dirs.Add(new Vector2Int(1, 1));
+                dirs.Add(new Vector2Int(1, -1));
+                dirs.Add(new Vector2Int(-1, 1));
+                dirs.Add(new Vector2Int(-1, -1));
+            }
+            return dirs;
+        }
+
+        int dx = Mathf.Clamp(node.x - node.parent.x, -1, 1);
+        int dy = Mathf.Clamp(node.y - node.parent.y, -1, 1);
+        dirs.Add(new Vector2Int(dx, dy));
+
+        if (allowDiagonal && dx != 0 && dy != 0) {
+            dirs.Add(new Vector2Int(dx, 0));
+            dirs.Add(new Vector2Int(0, dy));
+            dirs.Add(new Vector2Int(-dx, dy));
+            dirs.Add(new Vector2Int(dx, -dy));
+        } else if (dx != 0) {
+            if (allowDiagonal) {
+                dirs.Add(new Vector2Int(dx, 1));
+                dirs.Add(new Vector2Int(dx, -1));
+            }
+        } else if (dy != 0) {
+            if (allowDiagonal) {
+                dirs.Add(new Vector2Int(1, dy));
+                dirs.Add(new Vector2Int(-1, dy));
+            }
+        }
+
+        // 去重 + 可走过滤
+        var unique = new List<Vector2Int>(dirs.Count);
+        int w = grid.GetLength(0), h = grid.GetLength(1);
+        foreach (var d in dirs) {
+            if (d == Vector2Int.zero || unique.Contains(d)) continue;
+            int nx = node.x + d.x;
+            int ny = node.y + d.y;
+            if (!InBounds(nx, ny, w, h)) continue;
+            if (!grid[nx, ny].walkable) continue;
+            unique.Add(d);
+        }
+        return unique;
+    }
+
+    static bool HasForcedNeighbor(Node node, Vector2Int dir, Node[,] grid, bool allowDiagonal) {
+        int w = grid.GetLength(0), h = grid.GetLength(1);
+        int x = node.x, y = node.y;
+
+        bool Blocked(int px, int py) => !InBounds(px, py, w, h) || !grid[px, py].walkable;
+        bool Walkable(int px, int py) => InBounds(px, py, w, h) && grid[px, py].walkable;
+
+        if (!allowDiagonal || dir.x == 0 || dir.y == 0) {
+            if (dir.x != 0) {
+                return (Blocked(x, y + 1) && Walkable(x + dir.x, y + 1)) ||
+                       (Blocked(x, y - 1) && Walkable(x + dir.x, y - 1));
+            }
+            if (dir.y != 0) {
+                return (Blocked(x + 1, y) && Walkable(x + 1, y + dir.y)) ||
+                       (Blocked(x - 1, y) && Walkable(x - 1, y + dir.y));
+            }
+            return false;
+        }
+
+        return (Blocked(x - dir.x, y) && Walkable(x - dir.x, y + dir.y)) ||
+               (Blocked(x, y - dir.y) && Walkable(x + dir.x, y - dir.y));
+    }
+
+    static List<Node> ExpandJpsPath(List<Node> compactPath, Node[,] grid) {
+        if (compactPath == null || compactPath.Count <= 1) return compactPath;
+
+        var expanded = new List<Node> { compactPath[0] };
+        for (int i = 1; i < compactPath.Count; i++) {
+            Node prev = compactPath[i - 1];
+            Node cur = compactPath[i];
+
+            // 传送跳跃直接连
+            if (prev.isPortal && prev.portalTarget == cur) {
+                expanded.Add(cur);
+                continue;
+            }
+
+            int dx = Mathf.Clamp(cur.x - prev.x, -1, 1);
+            int dy = Mathf.Clamp(cur.y - prev.y, -1, 1);
+
+            int cx = prev.x + dx;
+            int cy = prev.y + dy;
+            while (cx != cur.x || cy != cur.y) {
+                expanded.Add(grid[cx, cy]);
+                cx += dx;
+                cy += dy;
+            }
+            expanded.Add(cur);
+        }
+        return expanded;
     }
 
     /// <summary>构建 PathResult，统计预测伤害和是否使用传送门</summary>

@@ -319,7 +319,8 @@ public class Player : MonoSingleton<Player> {
         currentAlgorithm = currentAlgorithm switch {
             PathfindingAlgorithm.AStar => PathfindingAlgorithm.Dijkstra,
             PathfindingAlgorithm.Dijkstra => PathfindingAlgorithm.GreedyBestFirst,
-            PathfindingAlgorithm.GreedyBestFirst => PathfindingAlgorithm.AStar,
+            PathfindingAlgorithm.GreedyBestFirst => PathfindingAlgorithm.JumpPointSearch,
+            PathfindingAlgorithm.JumpPointSearch => PathfindingAlgorithm.AStar,
             _ => PathfindingAlgorithm.AStar
         };
         EventBus.Publish(new AlgorithmChangedEvent { algorithmName = currentAlgorithm.ToString() });

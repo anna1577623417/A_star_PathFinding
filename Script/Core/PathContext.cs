@@ -15,7 +15,7 @@ public enum PathPolicy {
     Fastest,        // 最快时间（默认，terrain cost 原值）
     Shortest,       // 最短距离（忽略 terrain cost，所有格子 cost=1）
     AvoidMud,       // 回避泥地（Mud cost ×3 惩罚）
-    PreferPortal,   // 偏好传送门（Portal cost ×0.1 奖励）
+    PreferPortal,   // 偏好传送门（更强 portal 吸引 + 更低跳跃代价）
     Cautious        // 谨慎模式（陷阱惩罚随血量放大）
 }
 

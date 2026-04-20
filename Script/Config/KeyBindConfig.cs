@@ -4,8 +4,8 @@ using UnityEngine;
 /// 键位配置元数据（ScriptableObject）
 /// 
 /// 【职责分工】
-///   InputActionAsset (.inputactions) → 管"按哪个键触发什么"（Unity 官方管）
-///   KeyBindConfig (本文件)           → 管"这个 Action 叫什么、归哪类、能不能改"（你管）
+///   InputActionAsset (.inputactions) → 管"按哪个键触发什么"（Unity 官方管，运行时真值）
+///   KeyBindConfig（KeyDefinition 角色）→ 管"列表项显示名、分类、是否可改、对应哪条 Action"（仅 UI 元数据）
 ///
 /// 【为什么需要这个 SO，InputActionAsset 不够吗？】
 ///   InputActionAsset 没有以下信息：

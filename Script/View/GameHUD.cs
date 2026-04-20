@@ -78,7 +78,7 @@ public class GameHUD : MonoBehaviour {
         var p = Player.Instance;
         int dataLines = 0;
         if (p != null) {
-            dataLines = 2; // 算法+位置
+            dataLines = 3; // 算法+策略+位置
             if (p.pathfindCount > 0) dataLines += 2;
         }
 
@@ -99,7 +99,7 @@ public class GameHUD : MonoBehaviour {
         OL(new Rect(x, y, w, lineH), "鼠标右键    循环切换地形", _body); y += lineH;
         OL(new Rect(x, y, w, lineH), "中键拖拽    平移视野", _body); y += lineH;
         OL(new Rect(x, y, w, lineH), "滚轮           缩放(FOV)", _body); y += lineH;
-        OL(new Rect(x, y, w, lineH), "Tab 视角   Q 算法   Esc 暂停   R 重玩", _body); y += lineH;
+        OL(new Rect(x, y, w, lineH), "Tab 视角   Q 算法   E 策略   Esc 暂停   R 重玩", _body); y += lineH;
         Sep(x, y, w); y += sepH;
 
         // 地形图例
@@ -111,7 +111,8 @@ public class GameHUD : MonoBehaviour {
 
         // 数据
         if (p != null) {
-            OL(new Rect(x, y, w, lineH), $"算法: {p.CurrentAlgorithm}   位置: ({p.gridX},{p.gridY})", _data); y += lineH;
+            OL(new Rect(x, y, w, lineH), $"算法: {p.CurrentAlgorithm}", _data); y += lineH;
+            OL(new Rect(x, y, w, lineH), $"策略: {p.CurrentPolicy}   位置: ({p.gridX},{p.gridY})", _data); y += lineH;
             OL(new Rect(x, y, w, lineH), $"总步数: {p.totalSteps}   寻路次数: {p.pathfindCount}", _data); y += lineH;
 
             if (p.pathfindCount > 0) {

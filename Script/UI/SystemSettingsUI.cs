@@ -254,19 +254,7 @@ public class SystemSettingsUI : MonoBehaviour {
     /// </summary>
     string GetMainBindingDisplay(InputAction action) {
         if (action.bindings.Count == 0) return "未绑定";
-
-        // 对于 Composite（如 Move 的 WASD），显示组合名
-        for (int i = 0; i < action.bindings.Count; i++) {
-            if (action.bindings[i].isComposite) {
-                // 返回整个 Composite 的显示字符串
-                return action.GetBindingDisplayString(i,
-                    InputBinding.DisplayStringOptions.DontIncludeInteractions);
-            }
-        }
-
-        // 普通绑定：取第一个
-        return action.GetBindingDisplayString(0,
-            InputBinding.DisplayStringOptions.DontIncludeInteractions);
+        return InputActionRebindHelper.GetPrimaryBindingDisplayString(action);
     }
 
     // ═══════════════════════════════════════════
@@ -279,7 +267,7 @@ public class SystemSettingsUI : MonoBehaviour {
     /// 【官方 API 工作流】
     ///   1. action.Disable() — 不禁用会冲突
     ///   2. PerformInteractiveRebinding(bindingIndex)
-    ///      - 找到第一个非 Composite 的绑定索引
+    ///      - bindingIndex 为 Composite 根或首个独立绑定（与显示字符串一致）
     ///   3. WithControlsExcluding("Mouse") — 防止鼠标移动被误绑
     ///   4. WithCancelingThrough("<Keyboard>/escape") — Esc 取消
     ///   5. OnComplete → 显示结果 → 延迟关闭 → 重新 Enable
@@ -287,14 +275,7 @@ public class SystemSettingsUI : MonoBehaviour {
     ///   7. Start() — 开始监听下一次按键
     /// </summary>
     void StartRebind(InputAction action) {
-        // 找到要重绑的 binding 索引（跳过 Composite 本身，找第一个实际绑定）
-        int bindingIndex = -1;
-        for (int i = 0; i < action.bindings.Count; i++) {
-            if (!action.bindings[i].isComposite) {
-                bindingIndex = i;
-                break;
-            }
-        }
+        int bindingIndex = InputActionRebindHelper.GetRebindRootBindingIndex(action);
         if (bindingIndex < 0) return;
 
         isRebinding = true;

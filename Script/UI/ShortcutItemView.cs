@@ -23,7 +23,7 @@ using UnityEngine.UI;
 ///
 /// 【三种状态】
 ///   Normal    → KeyText 显示当前绑定（如 "Tab"），按钮可点击
-///   Rebinding → KeyText 显示 "请按下新按键..."，按钮不可点击，文字闪烁
+///   Rebinding → KeyText 显示 "Input a Key to Rebind"，可交互区暂时不可点
 ///   Confirm   → KeyText 显示新按键名（绿色），1秒后自动回到 Normal
 ///
 /// 挂载：列表项预制体根物体
@@ -176,7 +176,7 @@ public class ShortcutItemView : MonoBehaviour,
 
             case ItemState.Rebinding:
                 if (keyText != null) {
-                    keyText.text = "请按下新按键...";
+                    keyText.text = "Input a Key to Rebind";
                     keyText.color = rebindingKeyColor;
                 }
                 if (keyArea != null)

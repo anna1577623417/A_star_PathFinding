@@ -88,7 +88,7 @@ public class ShortcutSettingsPanel : MonoSingleton<ShortcutSettingsPanel> {
     public void Show() {
         if (isOpen) return;
         isOpen = true;
-
+        SetCanvasGroupImmediate(isOpen);
         // 首次打开时生成列表（之后只刷新）
         if (itemViews.Count == 0)
             BuildList();
